@@ -1,3 +1,5 @@
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+
 ---
 title: AI Coding Assistants Integration
 ---
@@ -334,6 +336,66 @@ To authenticate with our API, either:
 
 - Set the `OPENAI_API_KEY` environment variable to your e-infra API key, or
 - Replace the API key directly in the downloaded `config.yaml` file.
+
+---
+## Multi-Agent Workflows
+Agentic clients (Claude Code, OpenCode, Hermes) can hand subtasks to **subagents**. A subagent is an isolated agent with its own context window and model that returns only a summary. Used well, subagents keep the main context small and put fast models on routine work.
+<Callout type="warn">
+The API allows **at most 5 concurrent requests per API key**. The main agent and every running subagent each use one slot, so run **at most 3 agents at once**. Agents above the limit get HTTP 429, retry with backoff, and slow down the whole run.
+</Callout>
+### Split work by role
+- **Main agent** (strong reasoning model): plans the work, splits it into tasks, reviews the results, and makes the final edits.
+- **Explorers** (small, fast model): search the code and read logs. Give them read-only tools.
+- **Workers** (fast coding model): implement one clearly scoped change, then run its tests.
+- **Reviewer** (reasoning model): checks the final diff once, at the end, not after every step.
+### Tips
+1. **Delegate independent work that produces a lot of output**, such as searching a large repository, reading long logs, or fixing tests in separate modules. Don't delegate a single command or a task that needs back-and-forth.
+2. **Write self-contained tasks.** Subagents don't see your conversation. Give each one the file paths, the goal, the constraints, and how to verify the result.
+3. **One file area per worker.** Parallel edits to the same files conflict. If workers depend on each other, run them one after another.
+4. **Verify the results.** A subagent's report that the tests pass is only its own claim. Have the main agent re-run the tests or read the diff.
+5. **Keep contexts small.** The API has no prompt caching, so each turn re-processes the whole conversation. Start a new session for each unrelated task, and let subagents read large files so the main agent doesn't have to.
+6. **Choose the model for speed.** Reasoning models think before every answer. Use them only for planning and review, and set an output limit of about 32K tokens so they don't run out of budget mid-thought.
+7. **Use generous timeouts** of several minutes. Latency on shared GPUs varies.
+### Configuration examples
+<Tabs items={['Claude Code', 'OpenCode', 'Hermes']}>
+<Tab value="Claude Code">
+Add the subagent model to the `env` block from [Configuration](#configuration), then define focused agents in `.claude/agents/`:
+```json title="~/.claude/settings.json (env excerpt)"
+"CLAUDE_CODE_SUBAGENT_MODEL": "agentic"
+```
+```markdown title=".claude/agents/explorer.md"
+---
+name: explorer
+description: Read-only codebase search. Reports file paths and line numbers.
+tools: Read, Grep, Glob
+model: haiku
+---
+Find what is asked and report concisely. Never edit files.
+```
+</Tab>
+<Tab value="OpenCode">
+```json title="~/.config/opencode/opencode.json (excerpt)"
+"agent": {
+  "explore": { "mode": "subagent", "model": "litellm/mini",
+               "description": "Read-only codebase search",
+               "tools": { "write": false, "edit": false } },
+  "review":  { "mode": "subagent", "model": "litellm/thinker",
+               "description": "Reviews the final diff for bugs" }
+}
+```
+</Tab>
+<Tab value="Hermes">
+```yaml title="~/.hermes/config.yaml (excerpt)"
+delegation:
+  provider: einfra
+  model: agentic               # fast workers
+  max_concurrent_children: 2   # main agent + 2 children = 3 agents
+  max_spawn_depth: 1           # subagents cannot spawn more subagents
+model:
+  timeout: 600
+```
+</Tab>
+</Tabs>
 
 ---
 
